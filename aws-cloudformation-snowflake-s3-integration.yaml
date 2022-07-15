@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: 'Snowflake S3 Sotrage Integration'
+Metadata:
+  Description: 'This cloudformation creates IAM role that is assumable by Snowflake to a particular S3 bucket.'
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: 'Snowflake Provided Values'
+        Parameters:
+          - SnowflakeRole
+          - ExternalId
+      -
+        Label:
+          default: 'Target Account Values'
+        Parameters:
+          - Owner
+          - Application
+          - Environment
+          - RoleName
+          - AccessLevel
+          - BucketName
+          - KMSBucket
+          - KMSKey
+Parameters:
+  Owner:
+    Type: String
+    Description: The application owner.
+  Application:
+    Type: String
+    Description: The name of the application.
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - stg
+      - prd
+  SnowflakeRole:
+    Type: String
+    Description: The source ARN of the snowflake role that will be assuming the IAM role in this account.
+  ExternalId:
+    Type: String
+    Description: The externalid provided by snowflake.
+  RoleName:
+    Type: String
+    Description: The rolename you would like to create in the target account.
+    Default: snowflake
+  AccessLevel:
+    Type: String
+    Description: The level of access that snowflake will have to your S3 bucket.
+    AllowedValues:
+      - ReadOnly
+      - ReadWrite
+  KMSBucket:
+    Type: String
+    Description: Is the bucket you are using KMS?
+    Default: false
+    AllowedValues:
+      - true
+      - false
+  KMSKey:
+    Type: String
+    Description: The KMS Key ARN of your bucket KMS key. Only applicable if using KMS encryption.
+  BucketName:
+    Type: String
+    Description: The S3 bucket you are providing Snowflake access to.
+Conditions:
+  ReadOnlyRole: !Equals
+    - !Ref AccessLevel
+    - 'ReadOnly'
+  ReadWriteRole: !Equals
+    - !Ref AccessLevel
+    - 'ReadWrite'
+  KMSPermissions: !Equals
+    - !Ref KMSBucket
+    - 'true'
+Resources:
+  SnowflakeRoleCreation:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Ref SnowflakeRole
+            Action:
+              - 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                sts:ExternalId:
+                  - !Ref ExternalId
+      Description: This role is assumable by Snowflake.
+      RoleName: !Ref RoleName
+      Tags:
+        - Key: "Application"
+          Value: !Ref Application
+        - Key: "Owner"
+          Value: !Ref Owner
+        - Key: "Environment"
+          Value: !Ref Environment
+  AddKMSPermissions:
+    Type: AWS::IAM::Policy
+    Condition: KMSPermissions
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Resource: !Ref KMSKey
+          Action:
+          - kms:Decrypt
+          - kms:Encrypt
+      PolicyName: bucket-kms-key-access
+      Roles:
+        - !Ref SnowflakeRoleCreation
+  SnowflakeReadOnlyPolicy:
+    Type: AWS::IAM::Policy
+    Condition: ReadOnlyRole
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Resource: !Join ['', ['arn:aws:s3:::', !Ref BucketName, '/*']]
+          Action:
+          - s3:GetObject
+          - s3:GetObjectVersion
+        - Effect: Allow
+          Resource: !Join ['', ['arn:aws:s3:::', !Ref BucketName]]
+          Action:
+          - s3:ListBucket
+          - s3:GetBucketLocation
+          Condition:
+            StringLike:
+              s3:prefix:
+                - "*"
+      PolicyName: snowflake-s3-read-only-access
+      Roles:
+        - !Ref SnowflakeRoleCreation
+  SnowflakeReadWritePolicy:
+    Type: AWS::IAM::Policy
+    Condition: ReadWriteRole
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Resource: !Join ['', ['arn:aws:s3:::', !Ref BucketName, '/*']]
+          Action:
+          - s3:PutObject
+          - s3:GetObject
+          - s3:GetObjectVersion
+          - s3:DeleteObject
+          - s3:DeleteObjectVersion
+        - Effect: Allow
+          Resource: !Join ['', ['arn:aws:s3:::', !Ref BucketName]]
+          Action:
+          - s3:ListBucket
+          - s3:GetBucketLocation
+          Condition:
+            StringLike:
+              s3:prefix:
+                - "*"
+      PolicyName: snowflake-s3-read-write-access
+      Roles:
+        - !Ref SnowflakeRoleCreation
+Outputs:
+  SnowFlakeAssumeRoleArn:
+    Value: !GetAtt SnowflakeRoleCreation.Arn
